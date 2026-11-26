@@ -11,11 +11,14 @@ export type Reply = {
   clearCookie: (name: string, options?: Record<string, unknown>) => void;
 };
 
+export type SessionUser = {
+  id: string;
+  email: string;
+  name: string;
+  role: "customer" | "admin";
+  onboardedAt: Date | null;
+};
+
 export type AuthedRequest = Request & {
-  user?: {
-    id: string;
-    email: string;
-    name: string;
-    role: "customer" | "admin";
-  };
+  user?: SessionUser;
 };

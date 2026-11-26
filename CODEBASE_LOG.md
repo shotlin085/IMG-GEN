@@ -1776,3 +1776,297 @@ verifying a package compiles while `pnpm dev` is live in this repo;
 - `MOCK_PROVIDERS=false` (live mode, real OpenRouter credits)
 - Budget: `hardStopInr` from `budget_rules` × requested image count (changed this session; was flat ₹20 regardless of count)
 - Latest migration: `0003_ambiguous_nico_minoru.sql` (generated + typechecked this session; **not yet applied** — see handoff above)
+
+---
+
+## 18. Session Handoff — 2026-09-24 (Production Fashion Studio frontend: motion, mobile-first nav, accessibility, honest controls)
+
+**Context for the next agent:** sections 1–17 were written on a different machine (`/Users/sayan/Documents/IMG GEN`, macOS). This session ran on `C:\Users\MSI\image_gen` (Windows), and git history here (`d712369` production DB seed → RLS → Railway/Vercel deployment prep) postdates the log's last entry. Where this log's "current state" claims conflict with the working tree or `git log`, trust the files.
+
+**What was done (customer web only, `apps/web`):**
+- Added `motion` (the Framer Motion successor — import from `motion/react`, not `framer-motion`) and a minimal `cn()` helper at `src/lib/cn.ts`. GSAP deliberately skipped: Motion covers the animation needs and GSAP is a poor trade under React 19.
+- Adopted shadcn/ui *principles* without installing the Radix stack (no theme infra exists, and the component aesthetic would violate the editorial design brief): semantic tokens in `:root` (`--surface`, `--text`, `--accent`, `--ring`, etc.), global `:focus-visible` rings, `color-scheme: light`.
+- `app-shell.tsx` rewrite: role-separated nav (Control room link only renders for `role === "admin"` from `/api/auth/me` — previously leaked to all users), real profile block (initials/name/role) or a Sign-in link, dead help/bell header buttons removed, Motion page fade on route change (disabled under reduced motion), and a mobile bottom tab bar (Studio/Projects/Account, 48px targets, `env(safe-area-inset-bottom)`), with the sidebar hidden below 760px.
+- New `camera-capture.tsx`: getUserMedia rear-camera overlay (framing guide, capture/retake, Escape to close, permission-denied fallback to file input), wired into the garment dropzone as "Capture with camera".
+- `generator.tsx` rewrite: step tabs are now functional (IntersectionObserver scroll-spy + `scrollIntoView`), AUTO/PRO progressive disclosure (PRO-only: image model select, camera-angle picker, detail-kind selects; switching to AUTO clears model/angle picks so AUTO honestly means "pipeline decides"), real localStorage draft persistence (`shotlin:studio-draft:v1`) with an honest "Draft saved · HH:MM" indicator (the old "autosaved just now" was a static lie), shared `uploadFile()` helper, and catalog fetch effects no longer clobber restored draft selections (functional `current ?? data[0]?.id` update).
+- Accessibility pass: `:focus-visible` outlines everywhere, all Motion animations skip under `prefers-reduced-motion`, smooth scrolling only under `no-preference`, `role="tablist"`/`aria-selected` on steps, `aria-pressed` on the mode toggle.
+- Icons: added `camera`, `user`, `swap` to `icon.tsx`.
+
+**Verification:** `pnpm -F shotlin-web check` (tsc --noEmit) and `pnpm -F shotlin-web build` both pass (9/9 routes, ~156 kB first load on `/`). **Not browser-verified this session** — the machine had 0.45 GB free RAM (documented constraint above), so the dev stack was left down. Smoke-test with `pnpm dev` when the machine has headroom: step-tab scroll-spy, AUTO/PRO toggle, draft restore across reload, camera overlay (needs API up for uploads; permission flow works offline), bottom nav under 760px.
+
+**Warnings (unchanged, still binding):**
+- Never `pnpm build` while `pnpm dev` runs against the same apps — stale-`.next` corruption has happened twice in this repo's history.
+- No push/deploy/live AI credits without explicit authorization; mock provider remains the default for automated verification.
+
+---
+
+## 19. Session Handoff — 2026-09-24 (Master plan P7/P8 data foundation: garment taxonomy + AI garment profiles + API)
+
+**Scope:** First executable slice of the 16-phase Production Fashion AI Studio plan. Phases 7 (AI garment understanding) and 8 (extensible taxonomy) needed a data foundation before any customer-facing garment intelligence UI can exist without dead controls.
+
+**Audit finding (why this slice):** CODEBASE_LOG §16's old "next steps" (anchor QA gating, per-angle retry, infra-retry classification) are already implemented in `apps/worker/src/nodes.ts` (`gateOnAnchorReview`, `retryFailedAngle`, `isRetryableInfraError`) — that list is stale. Remaining plan work is tracked against the 16-phase checklist, not §16.
+
+### Schema (`packages/database/src/schema.ts`, migration `drizzle/0011_sparkling_epoch.sql`)
+- `garment_taxonomy`: hierarchical (self-ref `parent_id`, cascade), `category` enum women|men|kids|unisex, unique `slug`, `aliases text[]`, `compatibility` jsonb, `is_active`, `sort_order`. Footwear intentionally absent by product scope.
+- `garment_profiles`: one row per (owner, content fingerprint `sha256(checksum:sizeBytes)`) → re-analyzing the same upload returns the cached profile. Stores `detection` jsonb (the existing `GarmentTruthSheet` contract), per-field `confidence` (0..1, nullable), `confirmed_attributes` jsonb (user corrections), `status` auto_detected|confirmed|corrected, `taxonomy_node_id`, `taxonomy_version` for reproducibility as the taxonomy evolves.
+- Migration generated but **NOT yet applied** — Postgres (docker compose) was down this session. Run `pnpm db:migrate && pnpm db:seed` when the stack is up.
+
+### Seed (`packages/database/src/taxonomy-seed.ts`, wired idempotently into `seed.ts`)
+- ~110 taxonomy nodes: women (saree + 10 regional sub-types, lehenga, salwar kameez, anarkali, kurti, pavadai/half-saree, mekhela chador, pheran, chaniya choli, blouse/choli, dupatta, gowns, dresses, western bottoms/tops/outerwear, swimwear, nightwear), men (kurta, kurta-pajama, sherwani/achkan, nehru/modi jacket, bandhgala, pathani, dhoti, lungi, mundu, angarkha + full western line), kids (girls frock/lehenga/pattu pavadai, boys kurta-pajama/sherwani/dhoti set, rompers, unisex). Indian/traditional families carry `compatibility.regionalStyle` and `drapeSupport` for Phase 11. Aliases on major nodes.
+
+### API (`apps/api/src/garments/garments.module.ts`, registered in `app.module.ts`)
+- Customer (`/garments`, AuthGuard): `GET /taxonomy/tree` (nested active nodes), `GET /profiles` (own profiles), `POST /analyze` { assetId } — IDOR-safe asset load (owner or admin), usable+garment_reference checks, fingerprint cache hit returns `{ cached: true }`, else runs `resolveProviders().analyzeGarment` with the enabled `vision_analyzer` registry model and persists the profile (MOCK_PROVIDERS respected — no live spend by default), maps truth-sheet `garmentType` → taxonomy slug best-effort; `PATCH /profiles/:id` — confirm/correct with ownership check and taxonomy node validation.
+- Admin (`/admin/garment-taxonomy`, AdminGuard): POST / PUT( partial ) / DELETE (cascades children).
+
+**Honest gaps (not claimed complete):** detection fields are the existing 16-field GarmentTruthSheet, not the plan's ~26; the "We detected this as…" editable UI (P7 frontend) is not built; taxonomy is not yet surfaced in the generator UI; migration/seed not applied to a live DB.
+
+**Verification:** `tsc --noEmit` green on database, api, core, providers, worker, web. `pnpm -r --workspace-concurrency=1 test` green (core 83, providers 20; api/worker have no test files yet). **New:** on this low-RAM box (203–305 MB free) `tsc` native-crashed until run with `NODE_OPTIONS=--max-old-space-size=700` — prefix memory-heavy builds/checks accordingly.
+
+**Warnings (unchanged, still binding):**
+- Never `pnpm build` (Next.js) while `pnpm dev` runs; dev stack stayed down all session.
+- No push/deploy/live AI credits without explicit authorization; mock provider is the default.
+- Admin accounts must not be publicly creatable; do not weaken RLS/session security.
+
+### Addendum §19.1 — P7 customer UI (same session)
+- `apps/web/src/components/garment-intel.tsx` (new): "We detected this as **{type}**" card with confidence chip, status chip (AI detected / confirmed / corrected), human-readable chips (colour · fabric · pattern · neckline · sleeves · silhouette · drape · embroidery), and an honest "unsure about: …" list from `uncertainDetails`. PRO mode reveals editable fields (type select, taxonomy category select fed by `/api/garments/taxonomy/tree` optgroups, free-text fabric/pattern/border/embroidery/neckline/sleeves/silhouette) and Confirm-vs-Save-corrections (PATCH status `confirmed` vs `corrected`). AUTO mode shows the summary and a note that Pro unlocks corrections — no dead inputs.
+- `generator.tsx`: upload success triggers `POST /api/garments/analyze` (non-blocking; silent when signed out, message-only on other failures); new uploads reset the profile; card rendered under the detail-references block inside the Garment step.
+- `globals.css`: `.garment-intel*` styles on semantic tokens (`--surface-raised`, `--border`, `--ring`, …), `:focus-visible` rings, reduced-motion respected via the global rule.
+- Verified: `tsc --noEmit` green for web. Not browser-tested (dev stack down; RAM constraint).
+
+---
+
+## 20. Session Handoff — 2026-09-24 (Master plan P5: real customer account, password change, first-run tour, working sign-out)
+
+**Audit finding:** `/settings` was admin-only provider config, yet the sidebar/mobile nav labelled it "Account" — customers clicking "Account" landed on "Admin access required". Also: `POST /api/auth/logout` existed server-side but **nothing in the UI ever called it** — there was no way to sign out.
+
+### Schema — migration `drizzle/0012_fantastic_blacklash.sql` (generated, NOT applied: Postgres down this session)
+- `users.organization_name` text nullable, `users.preferences` jsonb default `{}`, `users.onboarded_at` timestamptz nullable.
+
+### API — new `apps/api/src/account/account.module.ts` (registered in `app.module.ts`)
+- `GET /account` → profile + `garmentProfileCount` + live `activeSessions` count.
+- `PATCH /account` → name, organizationName, preferences (Zod-enumerated `defaultResolution` 1k|2k|4k, `defaultAspectRatio` portrait|square|landscape, `defaultOutputCount` 1..5; merged, not replaced).
+- `POST /account/onboarding` `{action: complete|skip}` → sets `onboardedAt` (tour is skippable by design).
+- `POST /account/password` → verifies current password with `verifyPassword`, rehashes, and **revokes every other session** while keeping the caller's cookie valid (compares `hashSessionToken(req.cookies["shotlin_session"])` against `user_sessions.token_hash`).
+- `SessionUser` is now defined once in `apps/api/src/types.ts` (was duplicated in `common.ts`) and carries `onboardedAt`; `AuthGuard` selects and attaches it, so `/api/auth/me` exposes it.
+
+### Web
+- New `/account` page: studio identity (name, business name, read-only email), studio defaults, session/garment/member-since stats, change-password form with client-side match/length guards, and a Sign-out control (mobile users have no rail).
+- `app-shell.tsx`: "Account" now routes to `/account` for everyone; "Settings" (provider config) is shown only to admins; real Sign-out button wired to `POST /api/auth/logout` + redirect.
+- First-run tour: `OnboardingTour` renders above the studio only for a signed-in user with `onboardedAt === null`, three anchored steps (#studio-garment / #studio-character / #studio-output), Skip + Finish both persist via the API; if the write fails the tour stays rather than silently disappearing.
+- `generator.tsx`: on a fresh visit (no local draft) it loads `/api/account` and applies the server defaults to resolution/frame/set-size; an existing draft wins because it encodes more specific intent.
+- Deliberately dropped: a "brand watermark" preference had no consumer in the prompt path, so it was removed instead of shipping a dead control.
+
+**Verification:** `tsc --noEmit` green for database, api, web; workspace tests green (core 83, providers 20). Not browser-verified (dev stack down, RAM constraint). Pending when the stack is next up: `pnpm db:migrate && pnpm db:seed` to apply 0011 + 0012 and load the taxonomy.
+
+**Warnings (unchanged, still binding):**
+- Never `pnpm build` (Next.js) while `pnpm dev` runs; prefix memory-heavy tsc/drizzle commands with `NODE_OPTIONS=--max-old-space-size=700` on this box.
+- No push/deploy/live AI credits without explicit authorization; mock provider stays the default.
+- Admin accounts must not be publicly creatable (`register` hardcodes `role: "customer"` — unchanged and still true).
+
+---
+
+## 21. Session Handoff — 2026-09-24 (Master plan P9 + P10: model system, age vocabulary, under-18 safety policy)
+
+### New domain module — `packages/core/src/model-appearance.ts` (92 core tests pass, 9 of them new)
+- `AGE_GROUPS`: nine canonical bands toddler / child / preteen / teen / young-adult / adult / middle-aged / senior / elder, each with a stated age range and an `isMinor` flag.
+- `AGE_APPEARANCE_VALUES` keeps the legacy strings (`mid-20s`, `late-teens`, `mid-40s`, `mature`, …) **valid** — historical jobs stay reproducible and seeded catalogue rows keep rendering; `ageGroupFor()` maps legacy → canonical group.
+- `evaluateChildSafety()` is the single deterministic policy: blocked pose / scene / styling token lists, normalised for case/separator, returning `violations`, human-readable `substitutions`, and `requiresGuardianConfirmation`.
+
+### Phase 10 enforcement (two nets, both server-side)
+- **API (`jobs.module`)**: `ageAppearance` is now a Zod enum over `AGE_APPEARANCE_VALUES` (was any string ≤60). Custom (`origin_kind = 'custom'`) models with an under-18 appearance are **rejected without a guardian record** before any spend. Environment presets are screened against `MINOR_BLOCKED_SCENES` with an actionable message. The decision is stored in the job snapshot (`selections.under18Policy`) so a historical job shows which policy governed it.
+- **Worker (`nodes.ts` prompt_compile)**: after the truth sheet exists, the same evaluator runs over the *garment's own* neckline / sleeves / silhouette / drape / special details — the only place those facts exist — and substitutes `MINOR_DEFAULT_POSE` for a blocked pose plus appends a `CHILD-SAFE DIRECTION:` line. AI execution still never runs in the web request path.
+
+### Phase 9 model system
+- Migration `drizzle/0013_omniscient_newton_destine.sql` (generated, NOT applied): `characters.origin_kind` enum preset|synthetic|custom (default preset), `consent_confirmed_at`, `consent_statement_version`, `guardian_confirmed_at`.
+- New `apps/api/src/models/model-library.module.ts` at `/customer/models`: `GET /` browse (studio + own), `GET /appearance-options` (age vocabulary + `CONSENT_STATEMENT_VERSION = "2026-09-01"` — bumping it invalidates old acknowledgements deliberately), `POST /` create with **required** right-to-use confirmation and a required guardian confirmation when the age band is a minor, `DELETE /:id` limited to the caller's own non-preset models (IDOR).
+- New `/models` page: filter by gender / age band / origin, model cards with facts, consent state shown for own models, add-model form where the guardian checkbox only appears for under-18 bands, and legacy catalogue strings still resolve to a filter bucket.
+- `generator.tsx`: age control now renders the nine API-supplied groups (with a pre-load fallback and preservation of an existing draft's value) and states plainly that under-18 appearances follow the styling policy.
+- `app-shell.tsx`: Models added to desktop and mobile navigation (P2 IA: Studio / Projects / Models / Account).
+
+**Verification:** `tsc --noEmit` green for database, core, providers, api, worker (web green too). Tests: core 92 passed, providers 20 passed. Not browser-verified; migrations 0011–0013 all still pending application (`pnpm db:migrate && pnpm db:seed` when the stack is next up).
+
+**Honest gaps:** synthetic-model *generation* (creating an identity from scratch) is not implemented — `origin_kind = 'synthetic'` exists and is settable at creation, but there is no generator flow behind it yet; model previews are still the single `previewAssetId`/identity-pack mechanism from before; the taxonomy/garment library UI (P15) is untouched.
+
+**Warnings (unchanged, still binding):** no `pnpm build` while dev runs; `NODE_OPTIONS=--max-old-space-size=700` for tsc/drizzle on this box; no push/deploy/live credits; mock provider default; admins not publicly creatable; under-18 policy is server-side and must not be loosened from the client.
+
+---
+
+## 22. Session Handoff — 2026-09-24 (Master plan P11: drape / dupatta / regional wear intelligence)
+
+- Migration `drizzle/0014_daffy_cardiac.sql` (generated, NOT applied): `wear_styles` — `kind` enum saree_drape|dupatta_placement|regional_look|layering, unique slug, `taxonomy_slugs text[]` (which garments it suits), `region`, `compatibility` jsonb, `prompt_fragment`, `drape_steps` jsonb, `is_active`, `sort_order`, `created_by`.
+- `packages/database/src/wear-seed.ts`: 14 saree drapes (Nivi, Bengali Atpoure, Gujarati Shaicha, Nauvari, Madisar, Kerala Munduputtavum, Odia Sambalpuri, Parsi Gara, Goan Kunbi, Lehenga-style, Dhoti-pant, Seedha pallu, Retro falling, Tribal) + 12 dupatta placements + 4 regional/layering looks, each with a written prompt fragment and plain-language step list. Idempotent by slug (refreshes copy, preserves admin-added rows). Wired into `seed.ts`.
+- API (`garments.module`): `GET /garments/wear-styles?for=<taxonomy slug or node id>` — node ids are resolved to slugs so the studio can use what it already has; when nothing is registered for a node it falls back to generic placements rather than showing an empty picker. Admin CRUD at `/admin/wear-styles` (Zod-validated, records `created_by`).
+- Job path: `wearStyleId` on the create request; the API resolves it and **copies the prompt fragment into `selections.wearStyle`**, so a later library edit cannot rewrite what an old job asked for. Worker emits `WEAR / DRAPE (<name>): <fragment>` in the compiled brief.
+- Studio: "How it is worn" chips appear in the Scene step, matched to the recognised garment (regional label shown), with the drape step sequence rendered as `step → step → step`; the pick is drafted to localStorage, cleared automatically when the garment changes, and named in the review summary line.
+- Verification: all six packages `tsc --noEmit` OK; tests core 92 / providers 20 pass. Not browser-verified; migrations 0011–0014 still pending (`pnpm db:migrate && pnpm db:seed`).
+
+---
+
+## 23. Session Handoff — 2026-09-24 (Master plan P13: scenes, poses, crop, real aspect ratios)
+
+**New shared vocabulary — `packages/core/src/output-vocabulary.ts` (96 core tests pass, 4 new):**
+- `ASPECT_RATIOS`: six options — 3:4, 2:3, 1:1, 9:16, 4:3, 16:9 — each carrying the ratio **actually sent to the image model**. The legacy ids (`portrait`/`square`/`landscape`) remain in the list resolving to the ratios they always meant, so historical jobs re-run identically.
+- `POSES`: thirteen cards, each with plain-language note + prompt fragment; `adultOnly` marks hip-pop and looking-back.
+- `FRAMINGS`: seven crops from full-body to macro detail.
+- New test asserts **the `adultOnly` pose cards and `MINOR_BLOCKED_POSES` are the same set** — the UI promise and the server policy cannot drift. (Caught a real gap: `over-shoulder` was added to the blocklist.)
+
+**One source of truth, three consumers:**
+- `packages/providers/src/openrouter.ts`: deleted its private `{portrait: "3:4", …}` map and now calls `aspectRatioParam()`. Previously a stored `portrait-916` would have silently fallen back to 3:4.
+- `apps/api`: `aspectRatio`, `pose` and the new `framing` validate against the core lists (they were inline `z.enum` literals); `framing` is stored in `selections`; the under-18 screen now evaluates pose as well as scene.
+- `apps/worker`: emits `POSE:` from the pose fragment, adds `FRAMING:`, and prints the real ratio in `ASPECT RATIO:` (e.g. `ASPECT RATIO: 9:16 (portrait-916)`).
+- `GET /customer/options` serves the vocabulary so the studio renders what the API validates.
+
+**Studio (`generator.tsx`):**
+- Frame select lists all six ratios with their use (marketplace grids, reels, campaign banner). Old localStorage drafts holding display labels ("Portrait") are normalised to ids on load — a stored value can never become an invalid submission.
+- PRO mode adds 13 pose chips and 7 crop chips with tooltips; AUTO clears both (same "decide for me" honesty as angles/model) and the age-blocked pose warns inline instead of letting the request bounce.
+- Review summary now names the frame with its ratio.
+
+**Scene library:** `seed.ts` grows from 7 to 17 presets (rooftop golden hour, heritage haveli, temple courtyard, handloom atelier, marigold courtyard, garden lawn, monsoon verandah, art-deco interior, desert fort, boutique rail) — none of which collide with the under-18 scene blocklist.
+
+**Verification:** all seven workspace packages `tsc --noEmit` OK; core 96 + providers 20 tests pass (the provider tests still pin the exact `aspect_ratio` payload). Still pending: browser check, and migrations 0011–0014 have not been applied to a live DB (`pnpm db:migrate && pnpm db:seed`).
+
+**Honest gaps in P13:** quality *modes* (Draft→Maximum) are not implemented — the plan lists them and the UI has no such control; the 6 ratios are exposed only through `outputCount`/camera-angle machinery that still caps at `MAX_ANGLES`.
+
+---
+
+## 24. Session Handoff — 2026-09-24 (Master plan P14: structured feedback, per-angle regeneration, admin feedback analytics)
+
+**Migration `drizzle/0015_goofy_lucky_pierre.sql`** (generated, NOT applied): `feedback.reasons text[]`, `jobs.parent_job_id uuid` → FK to `jobs.id` on delete set null.
+> Caution learned the hard way: a bulk `pgTable` edit anchored on `id: uuid("id")…userId: uuid("user_id")` silently landed on **user_sessions** first (drizzle-kit happily generated a nonsensical FK there). The bad `0015_unknown_amphibian.sql` was deleted, its `_journal.json` entry and snapshot rolled back, and the column re-placed with the `export const jobs = pgTable("jobs",` header as anchor. **Always grep the generated SQL for the target table name before accepting a migration.**
+
+**Seven structured reasons — `packages/core/src/feedback.ts`** (99 core tests, 3 new; one asserts exactly 7 unique ids and that each maps to a pipeline stage): `colour_off`, `detail_lost`, `fabric_wrong`, `drape_wrong`, `identity_changed`, `pose_framing`, `background_lighting`, each with an `owner` (vision / prompt / generation / identity / scene). `summarizeFeedbackReasons()` rolls counts up to the owning stage.
+
+**Result page (`/jobs/[id]`)**
+- "Needs improvement" now expands into the seven checkboxes plus a comment, and sends `{rating, reasons, comment}` in one request; "Good result" still sends immediately (reasons empty).
+- New **Try again** card on any delivered result: *Regenerate the {angle} angle* for the currently viewed image, and *Redo the whole set* when the job had several angles. Copy states plainly that a regeneration is a new job and never overwrites the current result.
+
+**API**
+- `POST /jobs/:id/regenerate` `{cameraAngle?}` — rebuilds the original request from `job_inputs` + the stored `selections` snapshot (garment, details with kinds, character, environment, model, resolution, ratio, pose, framing, wear style) and pushes it through the **normal `createJob` path**, so validation, budget guard and queueing are unchanged; the child is then linked with `parentJobId`. Rejects while the parent is still running and rejects an angle that was not part of the set. Route is behind the same `GenerationRateLimitGuard` as creation.
+- The `selections.wearStyle` snapshot now carries the style `id` as well as the fragment, so a regeneration keeps the same drape.
+- Feedback upsert stores and updates `reasons` (deduplicated).
+- `GET /admin/feedback/analytics` (AdminGuard) → totals, by rating, by reason (labelled, with owner), rolled-up by owner, last 20 records.
+
+**Admin control room**: new "Result feedback" tab (`FeedbackPanel`) rendering the analytics — reasons ranked, each annotated with the pipeline stage it routes to, plus the recent comment table.
+
+**Verification:** all seven packages `tsc --noEmit` OK; core 99 + providers 20 tests pass. Not browser-verified (dev stack down). P14 items still open: swipe-gesture navigation on the filmstrip (currently tap-to-select thumbnails) and a "reuse this output as a reference" flow, which needs an asset-import path from job outputs.
+
+**Warnings (unchanged, still binding):** no `pnpm build` while `pnpm dev` runs; use `NODE_OPTIONS=--max-old-space-size=700`; no push/deploy/live credits; mock provider default; migrations 0011–0015 all still need `pnpm db:migrate && pnpm db:seed`.
+
+---
+
+## 25. Session Handoff — 2026-09-24 (Master plan P15: garment library, presets, brand look-books, batch)
+
+- Migration `drizzle/0016_amused_khan.sql`: `garment_profiles.title` + `is_favorite`; new `studio_presets` (owner, `kind` generation|brand, name, `payload` jsonb, notes, `is_default`).
+- `apps/api/src/presets/presets.module.ts`: `/presets` CRUD with a **strict, whitelisted payload** (only job-request fields that the pipeline actually reads — a preset cannot carry a setting nothing consumes); setting one default clears the others for that kind. `/garments/library` returns each saved profile with a signed preview and its taxonomy name; `PATCH` rename/favourite; `DELETE` owner-scoped.
+- `POST /jobs/batch` (`jobs.module`): one garment + up to 8 variants (`environment/pose/framing/wearStyle/outputCount` each) is expanded into normal `createJob` calls, so budget, validation, idempotency and the queue behave identically to a single generation. Reports `started / requested / failures` instead of pretending a partial run succeeded.
+- Web: `/garments` library (name, favourite, remove, **Shoot this garment** hands the asset to the studio via a one-shot `localStorage` key the generator consumes and deletes); `/presets` (brand look-book builder: approved scenes + default model, plus a table of generation/brand presets with default/delete); `/batch` (garment picker → shared settings → variant rows → per-look result links and honest failure lines); studio header gains a `PresetBar` (apply / save-current, inline naming) whose apply maps back onto the real studio state; nav gains Garments / Batch / Presets.
+- `NODE_OPTIONS=--max-old-space-size=700` remains required for every tsc/drizzle invocation on this box.
+
+---
+
+## 26. Session Handoff — 2026-09-24 (First LIVE end-to-end verification: migrations applied, API + worker booted, three real bugs fixed)
+
+**Why this mattered:** everything up to §25 had only ever been checked by `tsc` and unit tests. The stack was finally brought up, and it found bugs typechecking cannot see.
+
+**Environment found (and respected):** `lndry_postgres` owns host port **5434** and a foreign MinIO answers on **9000/::1:9000**, so `docker compose up` for this project cannot bind its own Postgres, and presigned uploads fail with `InvalidAccessKeyId`. I did **not** touch the other projects' containers. Instead I ran a throwaway `shotlin-pg-verify` container on port 5499 mounted on the project's own `shotlin_pgdata` volume, then removed it and left every container in its original state (shotlin-postgres/redis/minio all Exited again).
+**To run the stack locally, free 5434 and 9000 (or change the compose host ports) first.**
+
+**Migrations 0011–0016 applied for real; seed verified in SQL:**
+`164` taxonomy nodes (90 roots), `30` wear styles (14 saree drapes + 12 dupatta placements + 4 regional/layering), `17` environment presets, `6` characters, and **38 of 38 public tables have RLS enabled** (the migrate.ts sweep covers the new tables automatically).
+
+**Bug 1 — invalid migration (caught on first `db:migrate`).** `wear_styles.drape_steps` was a `jsonb` column defaulting to `ARRAY[]::text[]`, which Postgres rejects; drizzle-kit had emitted it into **0014** and the whole run rolled back. Fixed the schema default to `'[]'::jsonb`, hand-corrected the already-generated `0014_*.sql` and both snapshots, rolled the journal back and regenerated. A fresh `db:migrate` then applied cleanly. **Lesson: generated SQL is not evidence it runs — apply it to a database.**
+
+**Bug 2 — duplicate route kills the API at boot.** `@Controller("/customer/models")` (model library) collided with the existing `GET /customer/models` (image-generation models): `FST_ERR_DUPLICATED_ROUTE`, process exits — invisible to `tsc`. Moved the library to `/customer/model-library` and consolidated every vocabulary (age groups, aspect ratios, poses, framings) into one `GET /customer/options`; the stale duplicate route was removed rather than left behind.
+
+**Bug 3 — unique violations returned HTTP 500.** `POST /admin/garment-taxonomy` and `/admin/wear-styles` on a duplicate slug produced `{"statusCode":500}`. Added `apps/api/src/unique-violation.ts` and wrapped the writes in `ConflictException`. The **first attempt did not work**: Drizzle re-throws as `DrizzleQueryError` with the pg error under `.cause`, so a top-level `error.code` check never matched — the live retest still showed 500 until the helper walked the `cause` chain (bounded at depth 6 to survive a self-referential cause). Verified live: duplicate → `409 "A taxonomy node with that slug already exists"`, same for wear styles.
+- Also made `POST /garments/analyze` concurrency-safe: two simultaneous analyses of identical bytes hit the unique `(owner, fingerprint)` index, so the insert is now `onConflictDoNothing` and the loser re-selects and returns the winner's profile as `cached: true`.
+- The API gained its first real unit tests (`unique-violation.test.ts`, 4 passing).
+
+**Live endpoint battery (mock providers, no credits spent).** Verified against a running API: health reports postgres/redis/storage; register/login/me (now carrying `onboardedAt`); `/customer/options`; taxonomy tree (90 roots); wear styles `?for=womens-saree` → 14; presets create/rename/list/default; brand preset; **model consent gates**: create without consent → 400, under-18 without guardian → 400 `An under-18 model needs a guardian or rights-holder confirmation…`, with guardian → 201; IDOR delete of a foreign model → 404. Job creation: adult control → 201; **`teen` + `hip-pop` → 400 `Not used for an under-18 appearance: pose:hip-pop. pose → standing.`**; `teen` + `standing` → 201; unknown aspect ratio → 400 listing the valid enum; batch 2 variants → `started=2/2`; feedback with two reasons → 201 (invalid reason → 400); **customer hitting `/admin/feedback/analytics` → 403**, admin → 200 with `byOwner {vision:1, prompt:1}`; account overview/patch/onboarding-skip; wrong current password → 401, short new password → 400; logout → subsequent `/auth/me` → 401.
+**Worker:** boots against the new schema, consumes the queue, and correctly logs `job already terminal, skipping` for a re-delivered job. It then fails at `input_check` with `InvalidAccessKeyId` — the foreign MinIO, not the code. **So the generation → QA → delivery path and my WEAR/DRAPE / FRAMING / CHILD-SAFE prompt lines still have never executed.** That is the single most important thing to verify once object storage is reachable.
+- Honest limits found while testing: uploads/`/garments/analyze` happy path could not run for the same storage reason (guard paths returned the right messages: `Uploaded object not found — upload first`, `Upload is not validated yet…`); the generation rate limiter also swallows the *next* request with 429 when a previous one failed validation, which is correct anti-abuse behaviour but makes rapid-fire form retries feel like an error — worth revisiting when P14's retry UX is polished.
+- Test rows created during the battery were deleted afterwards; the dev volume now contains exactly what `db:migrate && db:seed` produces (1 admin user, 0 jobs).
+
+---
+
+## 27. Session Handoff — 2026-09-24 (Master plan P16: account control, audit trail, catalogue admin — verified live)
+
+**Migration `drizzle/0017_nostalgic_lenny_balinger.sql`:** `users.disabled_at`. Applied to the dev volume and verified.
+
+### Suspension is a real control, not a flag
+- `AuthGuard` now requires `isNull(users.disabledAt)` in the session lookup, so an **existing** cookie stops working the moment an account is suspended; `AuthService.login` additionally rejects with `This account is suspended` instead of pretending the credentials were wrong.
+- Suspending revokes every live session immediately (`user_sessions.revoked_at`), so the guard does not have to wait for token expiry.
+- Guards on the writes: no self-suspension, no self role change, and a last-active-admin check on demotion/suspension. Accounts are suspended rather than deleted so jobs and costs stay attributable — and `admin_audit_events.user_id` is `ON DELETE SET NULL`, so the trail survives even a real deletion (the panel then shows `—`).
+
+### New admin API (`apps/api/src/admin/admin-users.controllers.ts`)
+- `GET /admin/users` — accounts with live `jobCount` and `activeSessions` counts plus `activeAdmins`.
+- `POST /admin/users` — the **only** path to an admin account (public sign-up still hardcodes `role: "customer"`); password minimum 16 to match the seed policy.
+- `PATCH /admin/users/:id/role`, `POST /admin/users/:id/suspension` — both audited.
+- `GET /admin/audit?limit=` — actor name/email/role joined from `adminAuditEvents`, capped 1–200.
+- `AdminModule` now exports `AdminService`, and `GarmentsModule` injects it so every taxonomy and wear-style write emits `taxonomy.create|update|delete` / `wear_style.create|update|delete` audit rows. (Deliberate choice: reuse `AdminService.audit` rather than add a second audit abstraction.)
+
+### Control room UI (4 new tabs, 13 total)
+`Garment taxonomy` (tree with depth, add node with aliases + parent, deactivate instead of delete), `Drapes & wear` (kind filter, add/remove, shows the stored prompt fragment and step sequence), `Users` (roster, role select, suspend/reinstate, create-account form), `Audit trail` (refreshable event table). All read/write through the admin API — no static mock rows.
+
+### Live verification (again: typechecking cannot see DI or route faults)
+API booted with **96 routes mapped, zero errors**; `scripts/verify-p16.mjs` (kept for re-runs; dev-only, uses the seed fallback password) exercised the real behaviour:
+`create second admin → 201`; `short password → 400`; `self-suspend → 400`; `self-demote → 400`; `suspend → 201` and the **suspended account's already-issued session → 401 `Session expired or invalid`**; `login while suspended → 401 This account is suspended`; `reinstate → login 201`; `operator sees /admin/users → 200`; `demote → 200` and the ex-admin → **403 Admin access required**; `GET /admin/audit → 5 events` with actor attribution `admin@shotlin.local (admin) taxonomy.create garment_taxonomy`; duplicate slug still → `409`.
+Test rows were deleted afterwards; the volume is back to 1 admin user, 164 taxonomy nodes and 0 audit events, and every container was returned to its original state.
+
+**What P16 still needs:** the plan's fuller section list (moderation queue, benchmark runs, model price editing UI, provider health history) and the responsive/E2E pass; `Run inspector` and `Budget & cost` already exist. The generation pipeline itself remains unverified because port 9000 answers with a foreign MinIO (see §26).
+
+**Warnings (unchanged, still binding):** no `pnpm build` while `pnpm dev` runs; `NODE_OPTIONS=--max-old-space-size=700` for tsc/drizzle; no push/deploy/live credits; mock provider default; **admin accounts are creatable only by an existing admin**; suspension/RLS/session controls must not be loosened from the client.
+
+---
+
+## 28. Session Handoff — 2026-09-24 (First true end-to-end generation run: P7+P8+P11+P13+P14+P10 proven through the real pipeline)
+
+**How the storage blocker was worked around (without touching other projects):** port 9000 answers with a *foreign* MinIO, so `shotlin-minio` cannot bind it. I ran the project's own `shotlin_miniodata` volume in a throwaway container on **9010**, created `uploads`/`outputs` with the compose credentials, and started API + worker with `S3_ENDPOINT=http://localhost:9010 MOCK_PROVIDERS=true` alongside the throwaway Postgres on 5499. Both temp containers were removed afterwards, the buckets were emptied, and `shotlin-redis` was returned to its original Exited state.
+
+**New repeatable harness:** `scripts/verify-e2e.mjs` — registers a customer, presigns and PUTs a generated 480×640 PNG, validates it, analyses it, lists the wear styles offered for the detected node, then runs a two-angle adult job and a one-angle teen job. Dev-only (uses the seed fallback admin password), like `scripts/verify-p16.mjs`.
+
+**What actually happened (all of it previously unverified):**
+```
+register 201 → presign 201 → put object 200 → complete 201 usable {480x640, image/png}
+analyze 201 cached=false type=saree conf=0.92 → wear styles offered: 14 (Nivi, Bengali Atpoure, Gujarati Shaicha …)
+job 201 → states: ready → result 200 delivery=final images=2 (front, three_quarter_left)
+preview GET 200 14.5KB · png download 200 image/png 42.4KB
+step runs: input_check → vision → skill_select → prompt_compile → image_generate →
+           quality_review → rule_engine → second_review(skipped) → retry(skipped) → finalize  all succeeded
+ledger: candidates=2, job_outputs=2, cost_events=12 (mock $0.14323), truth_sheet persisted
+```
+This is the first time the camera/asset intake → garment recognition → taxonomy match → drape selection → generation → QA → delivery chain has run as a whole.
+
+**Gap found and fixed while verifying the trace:** `prompt_compile` recorded only `promptLength`, `layerSizes`, `truncated` and `budget` — so the control room's long-standing "prompt + truth sheet available per job" claim was **not true**: nothing stored what was actually sent, and my new prompt lines could not be inspected at all. The worker now also records `promptExcerpt` (first 4 000 chars of the assembled brief) plus `promptExcerptComplete`, and the run inspector renders it in an expandable "Compiled brief (N chars)" block. Bounded text of the customer's own selections and garment facts — no image bytes, no provider configuration.
+
+**Assertions read back from the real recorded briefs:**
+- adult 2-angle job: `WEAR / DRAPE`=true, `FRAMING`=true, pose fragment (`mid-stride walking`)=true, `ASPECT RATIO: 1:1`=true (the P13 ratio fix survives the provider boundary), `CHILD-SAFE`=false (correct for an adult).
+- teen job (`standing`, `full`, finished `ready`): `CHILD-SAFE DIRECTION: the wearer appears under 18 — age-appropriate styling, modest framing and natural posture`=true, `APPEARANCE AGE: teen`=true, `FRAMING`=true, and `selections.under18Policy=true` is stored on the job.
+- A third submission was met with `429 Generation is already being submitted…` — the limiter also fires *after* a rejected request, so a user who fixes a validation error cannot retry for a few seconds. Functional, but worth revisiting while polishing P14/P16 UX.
+
+**Cleanup:** all `e2e-*` users and their jobs/assets/profiles/presets/sessions deleted, both buckets emptied (they were empty before the run — verified `mc ls` = 0 objects), dev volume left at 1 seeded admin, 0 jobs, 164 taxonomy nodes.
+
+**Still unverified after this session:** live (non-mock) providers — deliberately unspent; browser/UI rendering of every page built this session; Playwright E2E; the P1 plan-audit artifact; remaining P16 sections (moderation queue, benchmark runs, price editing).
+
+**Warnings (unchanged, still binding):** no `pnpm build` while `pnpm dev` runs; `NODE_OPTIONS=--max-old-space-size=700`; no push/deploy/live AI credits; mock provider default; ports 5434/9000 are held by other projects (see §26 and the memory note).
+
+---
+
+## 29. Session Handoff — 2026-09-24 (First browser verification of the UI + WCAG target-size fix)
+
+**How, with no visible browser surface:** the in-app browser reported `viewport=0x0, visibilityState=hidden`, so pointer clicks and screenshots are refused (`NATIVE_BROWSER_VIEWPORT_UNAVAILABLE`); DOM evaluation and accessibility snapshots still work. Since CSS media queries follow the **iframe** viewport, rendering every route inside a sized iframe gives real responsive measurements without a surface. Login was performed with `fetch(..., credentials: "include")` from the page (CORS + `SameSite=lax` cookies across `localhost` ports behave as same-site).
+
+**Production build served for real:** `pnpm -F shotlin-web build` (dev stack was down, per the standing rule) → 13 routes, first-load JS 151–167 kB. Then `node next start -p 3100`.
+
+**Rendered and measured, first time ever:**
+- `/` studio: nav = Studio · Projects · Garments · Batch · Models · Presets · Account (P2 IA), 5 step tabs, Auto/Pro `aria-pressed`, first-run tour with 3 steps (P5), preset bar (P15), wear picker (P11), **age select rendering 10 options = 9 canonical groups + the draft's preserved legacy `mid-20s`** (P9/P10), **frame select 6 ratios with their use text** (P13), breadcrumb status `stack online`.
+- `/garments` (1 seeded saree card, 4 actions), `/models` (7 panels = 6 catalogue characters + filter row, 3 filter selects), `/presets` (3 panels, 18 inputs = the 17 approved-scene checkboxes + name), `/batch` (3 panels, 9 selects), `/account` (2 panels, 6 inputs, 4 buttons) — all render with live API data, **zero console messages** throughout.
+- `/admin` as a **customer** → "Operator access required" screen (UI role separation on top of the server 403). As **admin** → 13 tabs including the four new ones, and each new panel loads real data: taxonomy **164 rows**, drapes **30 rows**, users **2 rows**, audit 0 (events were cleaned).
+
+**Real defect found and fixed — touch targets.** Measuring visible interactive elements per viewport showed **43 controls below 44 px at 360 px (smallest 29 px)**: the §18 "accessibility pass" claim about target size had never been measured and was wrong. Added a `@media (max-width: 900px), (pointer: coarse)` block raising `.button`, step tabs, mode toggle, angle/wear chips, nav links, selects and inputs to `min-height: 44px` (plus 44 px `.icon-button`), keeping the 24 px floor for fine-pointer desktop. **After the fix: 360 px and 768 px → 0 elements under 44 px, smallest exactly 44; 1024/1920 → 0 under 24 px** (WCAG 2.2 AA 2.5.8 on desktop), no horizontal overflow at any width 360→1920.
+
+**Second trap worth remembering:** `pnpm -F shotlin-web start` spawns `next` as a **child of pnpm**; stopping the tracked background task killed only the wrapper, leaving an orphan holding 3100 and serving the *previous* build — my rebuilt CSS silently never reached the browser (`min-height: auto`, CSS hash `24d801ee…` on disk vs `29fdad9f…` expected). Detect it by comparing the served stylesheet hash with `apps/web/.next/static/css/`, or check `netstat -ano | grep :3100`. Start the server directly (`node ./node_modules/next/dist/bin/next start -p 3100`) to keep it killable as one process.
+
+**Cleanup:** UI test user + assets/profile/sessions deleted, both buckets emptied, throwaway Postgres/MinIO containers removed, `shotlin-redis` returned to Exited, ports 3100/4000 confirmed free. Dev volume state: 1 seeded admin, 164 taxonomy nodes, 30 wear styles, 0 jobs.
+
+**Still not verified:** actual pixels (needs a visible browser surface or Playwright — neither available here), swipe gestures on the result filmstrip, camera capture against a live device, and live (non-mock) providers.

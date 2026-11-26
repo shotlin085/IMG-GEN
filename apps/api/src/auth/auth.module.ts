@@ -94,6 +94,7 @@ class AuthService {
     if (!user || !verifyPassword(input.password, user.passwordHash)) {
       throw new UnauthorizedException("Invalid email or password");
     }
+    if (user.disabledAt) throw new UnauthorizedException("This account is suspended");
     return user;
   }
 

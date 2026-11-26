@@ -22,6 +22,7 @@ import {
   type QualityReview,
   type RuleResultDecision,
 } from "@shotlin/core";
+import { evaluateChildSafety, MINOR_DEFAULT_POSE, aspectRatioParam, framingById, poseById } from "@shotlin/core";
 import { extractImageMeta, createLogger } from "@shotlin/platform";
 import { ProviderError, type ResolvedProviders, type Usage } from "@shotlin/providers";
 import type { Storage } from "@shotlin/platform";
@@ -471,6 +472,34 @@ export const runPromptCompile: NodeRunner = async (ctx, node, deps) => {
     const env = ctx.environment;
     const char = ctx.character;
 
+    // Deterministic second net for an under-18 appearance: the API can only
+    // judge what the customer typed, whereas the garment's own neckline and
+    // silhouette facts exist only here. Nothing about a minor's styling is left
+    // to model judgement.
+    const characterAge = (char?.attributes as Record<string, unknown> | undefined)?.ageAppearance;
+    const childSafety = evaluateChildSafety({
+      ageAppearance:
+        typeof sel.ageAppearance === "string"
+          ? sel.ageAppearance
+          : typeof characterAge === "string"
+            ? characterAge
+            : null,
+      pose: typeof sel.pose === "string" ? sel.pose : null,
+      sceneKey: env ? `${(env as { key?: string }).key ?? ""} ${env.name ?? ""}` : null,
+      styling: [
+        ts?.neckline,
+        ts?.sleeves,
+        ts?.lengthSilhouette,
+        ts?.drapePallu,
+        ...((ts?.specialDetails as string[] | undefined) ?? []),
+      ].filter((value): value is string => typeof value === "string" && value.length > 0),
+    });
+    const requestedPose = typeof sel.pose === "string" ? sel.pose : "";
+    const poseValue =
+      childSafety.applies && childSafety.violations.some((violation) => violation.startsWith("pose:"))
+        ? MINOR_DEFAULT_POSE
+        : requestedPose;
+
     const facts = [
       ts ? `GARMENT TYPE: ${(ts.garmentType ?? "unknown").toUpperCase()}` : null,
       ts?.inputType ? `REFERENCE TYPE: ${ts.inputType}` : null,
@@ -503,11 +532,20 @@ export const runPromptCompile: NodeRunner = async (ctx, node, deps) => {
         : null,
       sel?.ageAppearance ? `APPEARANCE AGE: ${sel.ageAppearance}` : null,
       sel?.heightAppearance ? `HEIGHT: ${sel.heightAppearance}` : null,
-      sel?.pose && sel.pose !== "auto" ? `POSE: ${sel.pose}` : null,
+      requestedPose && requestedPose !== "auto" ? `POSE: ${poseById(poseValue)?.fragment ?? poseValue}` : null,
+      framingById(typeof sel.framing === "string" ? sel.framing : null)?.fragment
+        ? `FRAMING: ${framingById(sel.framing as string)!.fragment}`
+        : null,
       env ? `ENVIRONMENT: ${env.name} — ${env.promptFragment}` : null,
+      typeof (sel?.wearStyle as Record<string, unknown> | undefined)?.promptFragment === "string"
+        ? `WEAR / DRAPE (${String((sel!.wearStyle as Record<string, unknown>).name ?? "wear style")}): ${(sel!.wearStyle as { promptFragment: string }).promptFragment}`
+        : null,
+      childSafety.applies
+        ? `CHILD-SAFE DIRECTION: the wearer appears under 18 — age-appropriate styling, modest framing and natural posture${childSafety.violations.length > 0 ? `; not applied: ${childSafety.violations.join(", ")}` : ""}`
+        : null,
       `NEGATIVE CONSTRAINTS: no garment redesign, no invented motifs, no extra accessories, no logos or text unless visible in the reference, no anatomy errors, no background competing with the garment`,
       `RESOLUTION: ${ctx.job.requestedResolution}`,
-      `ASPECT RATIO: ${ctx.job.aspectRatio}`,
+      `ASPECT RATIO: ${aspectRatioParam(ctx.job.aspectRatio)} (${ctx.job.aspectRatio})`,
     ]
       .filter(Boolean)
       .join("\n");
@@ -543,6 +581,12 @@ export const runPromptCompile: NodeRunner = async (ctx, node, deps) => {
         truncated: compiled.truncated,
         promptLength: compiled.prompt.length,
         budget: compiled.budget,
+        // The control room claims "prompt available per job". Without the text
+        // the trace only proves a prompt existed, so a bounded excerpt of what
+        // was actually sent is recorded here (selections and garment facts —
+        // never image bytes or provider configuration).
+        promptExcerpt: compiled.prompt.slice(0, 4000),
+        promptExcerptComplete: compiled.prompt.length <= 4000,
       },
     });
   });

@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { AuthModule } from "../auth/auth.module";
 import { AdminService } from "./admin.service";
+import { AdminAuditController, AdminUsersController } from "./admin-users.controllers";
 import {
   BudgetController,
   ModelsController,
@@ -12,6 +13,7 @@ import {
 } from "./admin-config.controllers";
 import {
   AdminCharactersController,
+  AdminFeedbackController,
   AdminCostsController,
   AdminEnvironmentsController,
   AdminJobsController,
@@ -33,7 +35,11 @@ import {
     AdminOverviewController,
     AdminCharactersController,
     AdminEnvironmentsController,
+    AdminFeedbackController,
+    AdminUsersController,
+    AdminAuditController,
   ],
   providers: [AdminService],
+  exports: [AdminService],
 })
 export class AdminModule {}

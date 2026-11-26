@@ -7,6 +7,8 @@ import {
   type ProviderResult,
 } from "./types";
 
+import { aspectRatioParam } from "@shotlin/core";
+
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 type ContentPart =
@@ -346,11 +348,6 @@ export async function openRouterGenerateImage(
     throw new ProviderError("OPENROUTER_API_KEY is not configured", "openrouter");
   }
 
-  const aspectRatio: Record<string, string> = {
-    portrait: "3:4",
-    square: "1:1",
-    landscape: "4:3",
-  };
   const resolution: Record<string, string> = {
     "1k": "1K",
     "2k": "2K",
@@ -370,7 +367,7 @@ export async function openRouterGenerateImage(
       prompt: input.prompt,
       n: Math.min(Math.max(input.count, 1), 10),
       resolution: requestedResolution,
-      aspect_ratio: aspectRatio[input.aspectRatio] ?? "3:4",
+      aspect_ratio: aspectRatioParam(input.aspectRatio),
       output_format: "png",
       input_references: references.map((image) => ({
         type: "image_url",

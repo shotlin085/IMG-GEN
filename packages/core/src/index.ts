@@ -30,9 +30,45 @@ export {
   type CameraAngleKey,
 } from "./camera-angles";
 export {
-  checkModelCapabilities,
-  parseModelCapabilities,
+  checkModelCapabilities,  parseModelCapabilities,
   type ModelCapabilities,
   type GenerationRequestShape,
   type CapabilityCheckResult,
 } from "./model-capabilities";
+export {
+  AGE_GROUPS,
+  AGE_APPEARANCE_VALUES,
+  MINOR_BLOCKED_STYLING,
+  MINOR_BLOCKED_POSES,
+  MINOR_BLOCKED_SCENES,
+  MINOR_DEFAULT_POSE,
+  MINOR_DEFAULT_SCENE_CATEGORY,
+  ageGroupFor,
+  isMinorAppearance,
+  evaluateChildSafety,
+  type AgeGroup,
+  type AgeGroupId,
+  type ChildSafetyInput,
+  type ChildSafetyDecision,
+} from "./model-appearance";
+export {
+  ASPECT_RATIOS,
+  ASPECT_RATIO_VALUES,
+  aspectRatioParam,
+  POSES,
+  POSE_VALUES,
+  FRAMINGS,
+  FRAMING_VALUES,
+  poseById,
+  framingById,
+  type AspectRatioOption,
+  type PoseOption,
+  type FramingOption,
+} from "./output-vocabulary";
+export {
+  FEEDBACK_REASONS,
+  FEEDBACK_REASON_VALUES,
+  feedbackReasonOwner,
+  summarizeFeedbackReasons,
+  type FeedbackReason,
+} from "./feedback";

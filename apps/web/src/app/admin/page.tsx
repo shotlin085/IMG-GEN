@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { AppShell } from "../../components/app-shell";
 import { BudgetPanel, ModelsPanel, QualityRulesPanel, RunInspector, WorkflowStudio } from "../../components/workflow-studio";
+import { AuditPanel, TaxonomyPanel, UsersPanel, WearStylesPanel } from "../../components/admin-catalogue";
 import { apiFetch } from "../../components/api";
 
 type Overview = {
@@ -17,7 +18,7 @@ type Overview = {
   firstPassAcceptance: { passed: number; total: number };
 };
 
-const tabs = ["Overview", "Workflow Studio", "Models", "Prompts", "Skills", "Quality rules", "Budget & cost", "Run inspector"] as const;
+const tabs = ["Overview", "Workflow Studio", "Models", "Prompts", "Skills", "Quality rules", "Budget & cost", "Garment taxonomy", "Drapes & wear", "Users", "Audit trail", "Result feedback", "Run inspector"] as const;
 
 export default function Admin() {
   const [auth, setAuth] = useState<"loading" | "admin" | "blocked">("loading");
@@ -41,6 +42,11 @@ export default function Admin() {
     {tab === "Skills" && <ResourcePanel title="Skill selector library" endpoint="/api/admin/skills" collection="skills" columns={["name", "category", "isEnabled"]} />}
     {tab === "Quality rules" && <QualityRulesPanel />}
     {tab === "Budget & cost" && <BudgetPanel />}
+    {tab === "Garment taxonomy" && <TaxonomyPanel />}
+    {tab === "Drapes & wear" && <WearStylesPanel />}
+    {tab === "Users" && <UsersPanel />}
+    {tab === "Audit trail" && <AuditPanel />}
+    {tab === "Result feedback" && <FeedbackPanel />}
     {tab === "Run inspector" && <RunInspector />}
   </div></AppShell>;
 }
@@ -66,6 +72,43 @@ function ResourcePanel({ title, endpoint, collection, columns }: { title: string
   const [rows, setRows] = useState<Array<Record<string, unknown>> | null>(null); const [error, setError] = useState<string | null>(null);
   useEffect(() => { apiFetch<Record<string, Array<Record<string, unknown>>>>(endpoint).then((payload) => setRows(payload[collection] ?? [])).catch((err) => setError(err instanceof Error ? err.message : "Could not load resource")); }, [endpoint, collection]);
   return <section className="panel panel-pad resource-panel"><div className="panel-head"><div><p className="panel-kicker">Live registry</p><h2 className="panel-title">{title}</h2><p className="help">Read from the admin API. Editing versioned resources remains auditable and can be added without changing run history.</p></div><span className="chip">{rows?.length ?? "…"} records</span></div>{error ? <p className="error-copy">{error}</p> : !rows ? <p className="help">Loading…</p> : rows.length === 0 ? <div className="empty-state"><strong>No records</strong><span>Seed or create a record before binding it to a workflow node.</span></div> : <div className="table-scroll"><table className="data-table"><thead><tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={String(row.id ?? index)}>{columns.map((column) => <td key={column}>{typeof row[column] === "boolean" ? <span className={`chip ${row[column] ? "" : "chip-warn"}`}>{row[column] ? "on" : "off"}</span> : String(row[column] ?? "—")}</td>)}</tr>)}</tbody></table></div>}</section>;
+}
+
+type FeedbackAnalytics = {
+  total: number;
+  byRating: { good: number; needs_improvement: number };
+  byReason: Array<{ reason: string; label: string; owner: string | null; count: number }>;
+  byOwner: Record<string, number>;
+  recent: Array<{ jobId: string; rating: string; reasons: string[]; comment: string | null; createdAt: string }>;
+};
+
+function FeedbackPanel() {
+  const [data, setData] = useState<FeedbackAnalytics | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    apiFetch<FeedbackAnalytics>("/api/admin/feedback/analytics").then(setData).catch((err) => setError(err instanceof Error ? err.message : "Could not load feedback analytics"));
+  }, []);
+  if (error) return <section className="panel panel-pad error-panel"><strong>Feedback unavailable</strong><p>{error}</p></section>;
+  if (!data) return <section className="panel panel-pad loading-panel">Loading customer feedback…</section>;
+  const owners = Object.entries(data.byOwner).sort((a, b) => b[1] - a[1]);
+  return (
+    <div className="admin-grid">
+      <section className="panel panel-pad">
+        <div className="panel-head"><div><p className="panel-kicker">What customers report</p><h2 className="panel-title">Reasons behind “needs improvement”</h2><p className="help">{data.total} feedback record{data.total === 1 ? "" : "s"} · {data.byRating.good} good, {data.byRating.needs_improvement} needing work.</p></div><span className="chip">from feedback</span></div>
+        {data.byReason.length === 0 ? <p className="help">No structured reasons recorded yet. Customers pick these on any result they rate down.</p> : (
+          <div className="insight-list">{data.byReason.map((row) => <div className="insight" key={row.reason}><span>{row.label}<small className="help"> routed to {row.owner ?? "unattributed"}</small></span><strong>{row.count}</strong></div>)}</div>
+        )}
+        {owners.length > 0 && <div className="overview-foot"><span>By pipeline stage</span><strong>{owners.map(([owner, count]) => `${owner} ${count}`).join(" · ")}</strong></div>}
+      </section>
+      <section className="panel panel-pad">
+        <div className="panel-head"><div><p className="panel-kicker">Recent</p><h2 className="panel-title">Latest comments</h2></div></div>
+        {data.recent.length === 0 ? <p className="help">Nothing submitted yet.</p> : (
+          <div className="table-scroll"><table className="data-table"><thead><tr><th>Job</th><th>Rating</th><th>Reasons</th><th>Comment</th></tr></thead>
+            <tbody>{data.recent.map((row) => <tr key={`${row.jobId}-${row.createdAt}`}><td><a href={`/jobs/${row.jobId}`}>open</a></td><td>{row.rating.replaceAll("_", " ")}</td><td>{row.reasons.join(", ") || "—"}</td><td>{row.comment ?? "—"}</td></tr>)}</tbody></table></div>
+        )}
+      </section>
+    </div>
+  );
 }
 
 function PromptPanel() {

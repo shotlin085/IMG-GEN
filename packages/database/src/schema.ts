@@ -19,6 +19,11 @@ import {
 /* ------------------------------------------------------------------ */
 
 export const userRoleEnum = pgEnum("user_role", ["customer", "admin"]);
+export const characterOriginKindEnum = pgEnum("character_origin_kind", [
+  "preset",
+  "synthetic",
+  "custom",
+]);
 export const versionStatusEnum = pgEnum("version_status", [
   "draft",
   "test",
@@ -126,6 +131,17 @@ export const users = pgTable("users", {
   passwordHash: text("password_hash").notNull(),
   name: text("name").notNull(),
   role: userRoleEnum("role").notNull().default("customer"),
+  /** Customer-facing label for the studio/business they run. */
+  organizationName: text("organization_name"),
+  /** Studio defaults applied when a new generation starts (AUTO mode). */
+  preferences: jsonb("preferences").$type<Record<string, unknown>>().notNull().default({}),
+  /** Set when the first-run tour was completed or skipped. */
+  onboardedAt: timestamp("onboarded_at", { withTimezone: true }),
+  /**
+   * Suspension, not deletion: run history and costs stay attributable.
+   * A suspended account cannot authenticate (see AuthGuard) or log in.
+   */
+  disabledAt: timestamp("disabled_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -205,6 +221,12 @@ export const characters = pgTable("characters", {
   previewAssetId: uuid("preview_asset_id").references(() => assets.id, {
     onDelete: "set null",
   }),
+  /** preset = studio-shipped, synthetic = generated identity, custom = the customer's own model. */
+  originKind: characterOriginKindEnum("origin_kind").notNull().default("preset"),
+  consentConfirmedAt: timestamp("consent_confirmed_at", { withTimezone: true }),
+  consentStatementVersion: text("consent_statement_version"),
+  /** Required before an under-18 custom model can be used (see Phase 10 policy). */
+  guardianConfirmedAt: timestamp("guardian_confirmed_at", { withTimezone: true }),
   isPreset: boolean("is_preset").notNull().default(false),
   ownerId: uuid("owner_id").references(() => users.id, { onDelete: "cascade" }),
   isEnabled: boolean("is_enabled").notNull().default(true),
@@ -260,6 +282,184 @@ export const environmentPresets = pgTable("environment_presets", {
     .notNull()
     .defaultNow(),
 });
+
+/* ------------------------------------------------------------------ */
+/* Garment taxonomy + AI garment understanding                         */
+/* ------------------------------------------------------------------ */
+
+export const garmentCategoryEnum = pgEnum("garment_category", [
+  "women",
+  "men",
+  "kids",
+  "unisex",
+]);
+
+export const garmentProfileSourceEnum = pgEnum("garment_profile_source", [
+  "ai",
+  "manual",
+]);
+
+export const garmentProfileStatusEnum = pgEnum("garment_profile_status", [
+  "auto_detected",
+  "confirmed",
+  "corrected",
+]);
+
+/**
+ * Hierarchical garment classification, admin-managed. Covers women, men and
+ * children including Indian/traditional families. Footwear is deliberately
+ * out of scope and must not be added.
+ */
+export const garmentTaxonomy = pgTable(
+  "garment_taxonomy",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    parentId: uuid("parent_id").references((): AnyPgColumn => garmentTaxonomy.id, {
+      onDelete: "cascade",
+    }),
+    category: garmentCategoryEnum("category").notNull(),
+    slug: text("slug").notNull().unique(),
+    name: text("name").notNull(),
+    aliases: text("aliases").array().notNull().default(sql`ARRAY[]::text[]`),
+    description: text("description"),
+    /**
+     * Domain compatibility metadata, e.g.
+     * { genders, ageBands, drapeSupport, layering, occasion, promptHints }
+     */
+    compatibility: jsonb("compatibility").$type<Record<string, unknown>>().notNull().default({}),
+    isActive: boolean("is_active").notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("garment_taxonomy_parent_idx").on(t.parentId),
+    index("garment_taxonomy_category_idx").on(t.category),
+  ],
+);
+
+/**
+ * Persisted AI garment understanding for one garment reference photo. One
+ * row per (owner, content fingerprint): re-analyzing the same upload returns
+ * the cached profile. Detection payloads are versioned by taxonomyVersion so
+ * historical job reproducibility is preserved when taxonomy evolves.
+ */
+export const garmentProfiles = pgTable(
+  "garment_profiles",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerId: uuid("owner_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    assetId: uuid("asset_id")
+      .notNull()
+      .references(() => assets.id, { onDelete: "cascade" }),
+    jobId: uuid("job_id").references(() => jobs.id, { onDelete: "set null" }),
+    taxonomyNodeId: uuid("taxonomy_node_id").references(() => garmentTaxonomy.id, {
+      onDelete: "set null",
+    }),
+    /** sha256 of the asset checksum + size — cache key for re-uploads. */
+    fingerprint: text("fingerprint").notNull(),
+    source: garmentProfileSourceEnum("source").notNull().default("ai"),
+    status: garmentProfileStatusEnum("status").notNull().default("auto_detected"),
+    /**
+     * Vision-model detection, ~26 fields: garmentType, category, silhouette,
+     * neckline, sleeveType, sleeveLength, hemline, length, fit, fabric,
+     * primaryColor, secondaryColors, pattern, embellishment, closure,
+     * occasion, formality, seasonality, transparency, texture, waistline,
+     * drapeSupport, regionalStyle, constructionNotes, summary.
+     */
+    detection: jsonb("detection").$type<Record<string, unknown>>().notNull().default({}),
+    /** Per-field confidence 0..1 for the editable "We detected this as…" UI. */
+    confidence: jsonb("confidence").$type<Record<string, number | null>>().notNull().default({}),
+    /** Domain values the user accepted or corrected after review. */
+    confirmedAttributes: jsonb("confirmed_attributes")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    correctedBy: uuid("corrected_by").references(() => users.id, { onDelete: "set null" }),
+    /** Customer-given name shown in the garment library. */
+    title: text("title"),
+    isFavorite: boolean("is_favorite").notNull().default(false),
+    taxonomyVersion: integer("taxonomy_version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("garment_profiles_owner_fingerprint_idx").on(t.ownerId, t.fingerprint),
+    index("garment_profiles_asset_idx").on(t.assetId),
+    index("garment_profiles_taxonomy_idx").on(t.taxonomyNodeId),
+  ],
+);
+
+export const wearStyleKindEnum = pgEnum("wear_style_kind", [
+  "saree_drape",
+  "dupatta_placement",
+  "regional_look",
+  "layering",
+]);
+
+/**
+ * How a garment is worn: saree drapes, dupatta placements, regional looks.
+ * The prompt fragment is versioned here (not in the UI) so the studio and the
+ * compiled prompt can never disagree about what "Nivi drape" means.
+ */
+export const wearStyles = pgTable(
+  "wear_styles",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    kind: wearStyleKindEnum("kind").notNull(),
+    slug: text("slug").notNull().unique(),
+    name: text("name").notNull(),
+    description: text("description"),
+    /** Region/community the style comes from, e.g. "Tamil Nadu", "Bengal". */
+    region: text("region"),
+    /** garment_taxonomy slugs this style can be worn with. */
+    taxonomySlugs: text("taxonomy_slugs").array().notNull().default(sql`ARRAY[]::text[]`),
+    /** { occasions: [], formality: "festive", modesty: "high" } */
+    compatibility: jsonb("compatibility").$type<Record<string, unknown>>().notNull().default({}),
+    promptFragment: text("prompt_fragment").notNull(),
+    /** Ordered plain-language steps, surfaced in the studio picker. */
+    drapeSteps: jsonb("drape_steps").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    isActive: boolean("is_active").notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("wear_styles_kind_idx").on(t.kind), index("wear_styles_active_idx").on(t.isActive)],
+);
+
+export const studioPresetKindEnum = pgEnum("studio_preset_kind", ["generation", "brand"]);
+
+/**
+ * Reusable studio settings (kind=generation) and brand look-books
+ * (kind=brand: approved scenes, default model and drape for a label).
+ * The payload is deliberately a subset of the job request, so applying a
+ * preset goes through the same validation as making the choice by hand.
+ */
+export const studioPresets = pgTable(
+  "studio_presets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerId: uuid("owner_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: studioPresetKindEnum("kind").notNull().default("generation"),
+    name: text("name").notNull(),
+    /** { environmentPresetId, characterId, pose, framing, aspectRatio, resolution, outputCount, wearStyleId, cameraAngles, sceneKeys, garmentProfileId } */
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+    notes: text("notes"),
+    isDefault: boolean("is_default").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("studio_presets_owner_idx").on(t.ownerId), index("studio_presets_kind_idx").on(t.kind)],
+);
 
 /* ------------------------------------------------------------------ */
 /* AI configuration: models, prompts, skills                           */
@@ -510,6 +710,10 @@ export const jobs = pgTable(
   "jobs",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    /** Set when a customer regenerates from an existing result (Phase 14). */
+    parentJobId: uuid("parent_job_id").references((): AnyPgColumn => jobs.id, {
+      onDelete: "set null",
+    }),
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
@@ -1023,6 +1227,8 @@ export const feedback = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     rating: feedbackRatingEnum("rating").notNull(),
+    /** Structured "what went wrong" picks from the seven shared reasons. */
+    reasons: text("reasons").array().notNull().default(sql`ARRAY[]::text[]`),
     comment: text("comment"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

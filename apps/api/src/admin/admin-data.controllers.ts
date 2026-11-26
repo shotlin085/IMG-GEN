@@ -21,6 +21,7 @@ import {
   costEvents,
   defects,
   environmentPresets,
+  feedback,
   generationCandidates,
   jobAttempts,
   jobInputs,
@@ -33,6 +34,7 @@ import {
   users,
   workflowNodes,
 } from "@shotlin/database";
+import { FEEDBACK_REASONS, feedbackReasonOwner, summarizeFeedbackReasons } from "@shotlin/core";
 import type { Storage } from "@shotlin/platform";
 import { z } from "zod";
 import { AdminGuard, parseWith } from "../common";
@@ -455,6 +457,48 @@ class AdminCostsController {
       totals,
       models: costModelSubtotals(rows, modelNames),
       totalInr: totals.inrCost,
+    };
+  }
+}
+
+/**
+ * Result-feedback analytics (Phase 14): what customers say is wrong, rolled up
+ * by the pipeline stage that owns the problem.
+ */
+@Controller("/admin/feedback")
+@UseGuards(AdminGuard)
+export class AdminFeedbackController {
+  constructor(@Inject(DB) private db: ApiDb) {}
+
+  @Get("/analytics")
+  async analytics() {
+    const rows = await this.db
+      .select({
+        rating: feedback.rating,
+        reasons: feedback.reasons,
+        comment: feedback.comment,
+        createdAt: feedback.createdAt,
+        jobId: feedback.jobId,
+      })
+      .from(feedback)
+      .orderBy(desc(feedback.createdAt))
+      .limit(1000);
+
+    const counts: Record<string, number> = {};
+    for (const row of rows) {
+      for (const reason of row.reasons ?? []) counts[reason] = (counts[reason] ?? 0) + 1;
+    }
+    return {
+      total: rows.length,
+      byRating: {
+        good: rows.filter((row) => row.rating === "good").length,
+        needs_improvement: rows.filter((row) => row.rating === "needs_improvement").length,
+      },
+      byReason: Object.entries(counts)
+        .map(([reason, count]) => ({ reason, label: FEEDBACK_REASONS.find((entry) => entry.id === reason)?.label ?? reason, owner: feedbackReasonOwner(reason), count }))
+        .sort((a, b) => b.count - a.count),
+      byOwner: summarizeFeedbackReasons(counts),
+      recent: rows.slice(0, 20),
     };
   }
 }

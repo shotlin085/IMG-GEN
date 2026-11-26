@@ -8,6 +8,7 @@ import {
 } from "@nestjs/common";
 import { and, eq } from "drizzle-orm";
 import { characters, environmentPresets, modelRegistry } from "@shotlin/database";
+import { AGE_GROUPS, ASPECT_RATIOS, FRAMINGS, POSES } from "@shotlin/core";
 import { AuthGuard } from "../common";
 import { AuthModule } from "../auth/auth.module";
 import { DB, type ApiDb } from "../infrastructure";
@@ -40,12 +41,21 @@ class ListingsService {
       .where(and(eq(modelRegistry.role, "image_generator"), eq(modelRegistry.isEnabled, true)));
     return rows;
   }
+  /** Output vocabulary so the studio renders the same values the API validates. */
+  listOutputOptions() {
+    return { aspectRatios: ASPECT_RATIOS, poses: POSES, framings: FRAMINGS, ageGroups: AGE_GROUPS };
+  }
 }
 
 @Controller("/customer")
 @UseGuards(AuthGuard)
 class CustomerController {
   constructor(private service: ListingsService) {}
+
+  @Get("/options")
+  listOutputOptions() {
+    return this.service.listOutputOptions();
+  }
 
   @Get("/characters")
   listCharacters() {

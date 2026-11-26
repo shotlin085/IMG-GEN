@@ -1,0 +1,15 @@
+{
+  "cookies": [
+    {
+      "name": "shotlin_session",
+      "value": "0a621bedf12deff6aefcca653f602d408a391638a3e0e83cf768fce18f4e9ff9",
+      "domain": "localhost",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Lax"
+    }
+  ],
+  "origins": []
+}

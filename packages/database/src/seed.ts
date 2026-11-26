@@ -6,6 +6,8 @@ import { desc, eq, isNull } from "drizzle-orm";
 import { hashPassword } from "@shotlin/platform";
 import { createDb } from "./client";
 import { loadRootEnv, requireEnv } from "./env";
+import { seedGarmentTaxonomy } from "./taxonomy-seed";
+import { seedWearStyles } from "./wear-seed";
 import {
   budgetRules,
   characters,
@@ -292,10 +294,106 @@ async function main() {
         "Clean minimal white environment, even diffused lighting, no distracting props, full focus on the garment and wearer.",
       sortOrder: 7,
     },
+    {
+      key: "rooftop-golden-hour",
+      name: "Rooftop · Golden Hour",
+      category: "outdoor",
+      description: "Open terrace in low warm sunlight.",
+      promptFragment:
+        "City rooftop terrace at golden hour, warm low sunlight raking across the fabric, soft haze on the skyline behind, relaxed editorial mood.",
+      sortOrder: 8,
+    },
+    {
+      key: "heritage-haveli",
+      name: "Heritage Haveli",
+      category: "indoor",
+      description: "Carved sandstone corridors and arches.",
+      promptFragment:
+        "Heritage haveli interior with carved sandstone pillars and arched corridors, daylight falling through jali screens onto the floor, regal traditional setting.",
+      sortOrder: 9,
+    },
+    {
+      key: "temple-courtyard",
+      name: "Temple Courtyard",
+      category: "festive",
+      description: "Stone courtyard with marigold and brass.",
+      promptFragment:
+        "Sunlit temple courtyard with worn stone floors, brass lamps and marigold garlands, ceremonial atmosphere, respectful and uncluttered framing.",
+      sortOrder: 10,
+    },
+    {
+      key: "handloom-atelier",
+      name: "Handloom Atelier",
+      category: "indoor",
+      description: "Working weaving studio with looms.",
+      promptFragment:
+        "Handloom weaving atelier with wooden pit looms and cones of yarn in the background, soft north-facing daylight, craft-focused documentary mood.",
+      sortOrder: 11,
+    },
+    {
+      key: "marigold-courtyard",
+      name: "Marigold Courtyard",
+      category: "festive",
+      description: "Floral courtyard for wedding looks.",
+      promptFragment:
+        "Courtyard dressed with marigold and rose garlands, low tables with brass diyas, warm festive wedding styling with rich colour in the backdrop.",
+      sortOrder: 12,
+    },
+    {
+      key: "garden-lawn",
+      name: "Garden Lawn",
+      category: "outdoor",
+      description: "Green lawn with hedges and soft shade.",
+      promptFragment:
+        "Manicured garden lawn with clipped hedges and dappled tree shade, fresh natural daylight, calm daytime styling.",
+      sortOrder: 13,
+    },
+    {
+      key: "monsoon-verandah",
+      name: "Monsoon Verandah",
+      category: "outdoor",
+      description: "Covered verandah with wet stone and green.",
+      promptFragment:
+        "Verandah of a traditional home during the monsoon, wet stone steps and lush green beyond, soft grey diffused light, quiet atmospheric mood.",
+      sortOrder: 14,
+    },
+    {
+      key: "art-deco-interior",
+      name: "Art Deco Interior",
+      category: "indoor",
+      description: "Terrazzo, arches and muted pastels.",
+      promptFragment:
+        "Art Deco interior with terrazzo floors, curved archways and muted pastel walls, controlled daylight, contemporary boutique elegance.",
+      sortOrder: 15,
+    },
+    {
+      key: "desert-fort",
+      name: "Desert Fort",
+      category: "cinematic",
+      description: "Sandstone ramparts and open sky.",
+      promptFragment:
+        "Sandstone fort ramparts against a wide clear sky, strong directional sunlight and long shadows, dramatic travel-editorial scale.",
+      sortOrder: 16,
+    },
+    {
+      key: "boutique-rail",
+      name: "Boutique Rail",
+      category: "indoor",
+      description: "Retail rail and mirrors for catalogue.",
+      promptFragment:
+        "Modern boutique interior with a clothing rail, mirrors and warm accent lighting, clean commercial styling that keeps the garment the subject.",
+      sortOrder: 17,
+    },
   ];
   for (const e of environmentSeeds) {
     await getOrCreate(db, environmentPresets, "key", e.key, e);
   }
+
+  /* ---------------- garment taxonomy (women / men / kids) ---------------- */
+  const taxonomyCount = await seedGarmentTaxonomy(db);
+  console.log(`  garment taxonomy: ${taxonomyCount} top-level families`);
+  const wearCount = await seedWearStyles(db);
+  console.log(`  wear styles: ${wearCount} drapes, placements and looks`);
 
   /* ---------------- model registry + price versions ---------------- */
   type ModelSeed = {

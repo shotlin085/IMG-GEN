@@ -1,4 +1,4 @@
-type Props = { name: "grid" | "spark" | "folder" | "settings" | "help" | "bell" | "arrow" | "plus" | "download" | "check" | "lock" };
+type Props = { name: "grid" | "spark" | "folder" | "settings" | "help" | "bell" | "arrow" | "plus" | "download" | "check" | "lock" | "camera" | "user" | "swap" };
 
 export function Icon({ name }: Props) {
   const common = { width: 16, height: 16, viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: 1.4, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
@@ -14,6 +14,9 @@ export function Icon({ name }: Props) {
     download: <><path d="M8 2.5v7.2M5.2 7.5 8 10.3l2.8-2.8M3 12.7h10"/></>,
     check: <path d="m3.5 8.2 2.7 2.7 6.3-6.1"/>,
     lock: <><rect x="3" y="6.5" width="10" height="7" rx="1"/><path d="M5.2 6.5V5a2.8 2.8 0 0 1 5.6 0v1.5"/></>,
+    camera: <><rect x="2" y="5" width="12" height="8.5" rx="1.5"/><path d="M6 5 7 3.5h2L10 5"/><circle cx="8" cy="9.2" r="2.6"/></>,
+    user: <><circle cx="8" cy="5.3" r="2.5"/><path d="M3.3 13.5a4.9 4.9 0 0 1 9.4 0"/></>,
+    swap: <><path d="M13 8a5 5 0 1 1-1.4-3.5"/><path d="M13 2.4v2.7h-2.7"/></>,
   };
   return <svg {...common} aria-hidden="true">{paths[name]}</svg>;
 }

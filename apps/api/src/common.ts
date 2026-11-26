@@ -21,12 +21,7 @@ export function hashSessionToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-export type SessionUser = {
-  id: string;
-  email: string;
-  name: string;
-  role: "customer" | "admin";
-};
+export type { SessionUser } from "./types";
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -43,6 +38,8 @@ export class AuthGuard implements CanActivate {
         email: users.email,
         name: users.name,
         role: users.role,
+        onboardedAt: users.onboardedAt,
+        disabledAt: users.disabledAt,
       })
       .from(userSessions)
       .innerJoin(users, eq(users.id, userSessions.userId))
@@ -50,6 +47,7 @@ export class AuthGuard implements CanActivate {
         and(
           eq(userSessions.tokenHash, hashSessionToken(token)),
           isNull(userSessions.revokedAt),
+          isNull(users.disabledAt),
           gt(userSessions.expiresAt, new Date()),
         ),
       )
@@ -57,7 +55,7 @@ export class AuthGuard implements CanActivate {
 
     if (rows.length === 0) throw new UnauthorizedException("Session expired or invalid");
     const r = rows[0];
-    req.user = { id: r.userId, email: r.email, name: r.name, role: r.role };
+    req.user = { id: r.userId, email: r.email, name: r.name, role: r.role, onboardedAt: r.onboardedAt };
     return true;
   }
 }

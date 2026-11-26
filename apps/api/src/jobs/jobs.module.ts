@@ -21,6 +21,7 @@ import {
   assets,
   budgetRules,
   characters,
+  wearStyles,
   environmentPresets,
   executionManifests,
   feedback,
@@ -39,7 +40,7 @@ import {
   workflowVersions,
   workflows,
 } from "@shotlin/database";
-import { CUSTOMER_FACING_STATES, MAX_ANGLES, resolveAngleSet } from "@shotlin/core";
+import { CUSTOMER_FACING_STATES, MAX_ANGLES, resolveAngleSet, AGE_APPEARANCE_VALUES, ASPECT_RATIO_VALUES, POSE_VALUES, FRAMING_VALUES, FEEDBACK_REASON_VALUES, isMinorAppearance, evaluateChildSafety } from "@shotlin/core";
 import type { Storage } from "@shotlin/platform";
 import { z } from "zod";
 import { AuthGuard, parseWith } from "../common";
@@ -68,14 +69,19 @@ const createJobSchema = z.object({
   characterId: z.string().uuid().nullable().optional(),
   characterAssetId: z.string().uuid().nullable().optional(),
   genderPresentation: z.enum(["female", "male", "other"]).nullable().optional(),
-  ageAppearance: z.string().min(1).max(60).default("mid-20s"),
+  ageAppearance: z
+    .enum(AGE_APPEARANCE_VALUES as unknown as [string, ...string[]])
+    .default("mid-20s"),
   heightAppearance: z.string().min(1).max(60).default("average"),
-  pose: z.enum(["auto", "standing", "walking", "closeup"]).default("auto"),
+  pose: z.enum(POSE_VALUES as unknown as [string, ...string[]]).default("auto"),
+  framing: z.enum(FRAMING_VALUES as unknown as [string, ...string[]]).default("auto"),
+  /** Optional drape / dupatta placement. Its prompt fragment is snapshotted. */
+  wearStyleId: z.string().uuid().nullable().optional(),
   environmentPresetId: z.string().uuid().nullable().optional(),
   /** Explicit image-generation model choice. Null/omitted = use the production workflow's configured default. */
   imageModelId: z.string().uuid().nullable().optional(),
   resolution: z.enum(["1k", "2k", "4k"]).default("2k"),
-  aspectRatio: z.enum(["portrait", "square", "landscape"]).default("portrait"),
+  aspectRatio: z.enum(ASPECT_RATIO_VALUES as unknown as [string, ...string[]]).default("portrait"),
   outputCount: z.number().int().min(1).max(MAX_ANGLES).default(1),
   /** Optional explicit camera angles; defaults are derived from outputCount. */
   cameraAngles: z.array(z.string()).max(MAX_ANGLES).nullable().optional(),
@@ -83,7 +89,59 @@ const createJobSchema = z.object({
 
 const feedbackSchema = z.object({
   rating: z.enum(["good", "needs_improvement"]),
+  reasons: z
+    .array(z.enum(FEEDBACK_REASON_VALUES as unknown as [string, ...string[]]))
+    .max(FEEDBACK_REASON_VALUES.length)
+    .default([]),
   comment: z.string().max(2000).optional(),
+});
+
+const MAX_BATCH_VARIANTS = 8;
+
+const batchSchema = z.object({
+  garmentAssetId: z.string().uuid(),
+  /** Preset values applied to every variant; a variant can override any of them. */
+  base: z
+    .object({
+      characterId: z.string().uuid().nullable().optional(),
+      characterAssetId: z.string().uuid().nullable().optional(),
+      environmentPresetId: z.string().uuid().nullable().optional(),
+      imageModelId: z.string().uuid().nullable().optional(),
+      resolution: z.enum(["1k", "2k", "4k"]).optional(),
+      aspectRatio: z.string().min(1).max(30).optional(),
+      pose: z.string().min(1).max(60).optional(),
+      framing: z.string().min(1).max(60).optional(),
+      ageAppearance: z.string().min(2).max(60).optional(),
+      heightAppearance: z.string().min(2).max(60).optional(),
+      wearStyleId: z.string().uuid().nullable().optional(),
+      detailReferences: z
+        .array(z.object({ assetId: z.string().uuid(), kind: detailKindSchema.default("other") }))
+        .max(5)
+        .optional(),
+    })
+    .default({}),
+  variants: z
+    .array(
+      z
+        .object({
+          label: z.string().trim().max(80).optional(),
+          environmentPresetId: z.string().uuid().nullable().optional(),
+          pose: z.string().min(1).max(60).optional(),
+          framing: z.string().min(1).max(60).optional(),
+          wearStyleId: z.string().uuid().nullable().optional(),
+          characterId: z.string().uuid().nullable().optional(),
+          outputCount: z.number().int().min(1).max(MAX_ANGLES).optional(),
+          cameraAngles: z.array(z.string().min(1).max(40)).max(MAX_ANGLES).nullable().optional(),
+        })
+        .strict(),
+    )
+    .min(1)
+    .max(MAX_BATCH_VARIANTS),
+});
+
+const regenerateSchema = z.object({
+  /** A single camera angle from the parent job, or omit to redo the whole set. */
+  cameraAngle: z.string().min(1).max(60).nullable().optional(),
 });
 
 @Injectable()
@@ -163,21 +221,49 @@ class JobsService {
     const workflowVersionNumber = wfRows[0].versionNumber;
 
     // ---- character / environment checks ----
+    let under18Policy = false;
     if (input.characterId) {
       const c = await this.db
-        .select({ id: characters.id })
+        .select({
+          id: characters.id,
+          originKind: characters.originKind,
+          attributes: characters.attributes,
+          guardianConfirmedAt: characters.guardianConfirmedAt,
+        })
         .from(characters)
         .where(eq(characters.id, input.characterId))
         .limit(1);
       if (c.length === 0) throw new BadRequestException("Character not found");
+      const character = c[0];
+      const characterAge =
+        typeof character.attributes?.ageAppearance === "string"
+          ? character.attributes.ageAppearance
+          : null;
+      // Either side of the pairing can make the subject a minor.
+      under18Policy = isMinorAppearance(characterAge) || isMinorAppearance(input.ageAppearance);
+      if (under18Policy && character.originKind === "custom" && !character.guardianConfirmedAt) {
+        throw new BadRequestException(
+          "This model represents an under-18 person. A guardian or rights-holder confirmation is required before generating.",
+        );
+      }
     }
     if (input.environmentPresetId) {
       const e = await this.db
-        .select({ id: environmentPresets.id })
+        .select({ id: environmentPresets.id, key: environmentPresets.key, name: environmentPresets.name })
         .from(environmentPresets)
         .where(eq(environmentPresets.id, input.environmentPresetId))
         .limit(1);
       if (e.length === 0) throw new BadRequestException("Environment preset not found");
+      const sceneDecision = evaluateChildSafety({
+        ageAppearance: under18Policy ? input.ageAppearance : null,
+        pose: input.pose,
+        sceneKey: `${e[0].key} ${e[0].name}`,
+      });
+      if (sceneDecision.violations.length > 0) {
+        throw new BadRequestException(
+          `Not used for an under-18 appearance: ${sceneDecision.violations.join(", ")}. ${sceneDecision.substitutions.join("; ")}.`,
+        );
+      }
     }
     if (input.imageModelId) {
       const m = await this.db
@@ -194,12 +280,35 @@ class JobsService {
       if (m.length === 0) throw new BadRequestException("Selected image model is not available");
     }
 
+    let wearStyleSnapshot: { id: string; slug: string; name: string; promptFragment: string } | null = null;
+    if (input.wearStyleId) {
+      const w = await this.db
+        .select({
+          id: wearStyles.id,
+          slug: wearStyles.slug,
+          name: wearStyles.name,
+          promptFragment: wearStyles.promptFragment,
+          isActive: wearStyles.isActive,
+        })
+        .from(wearStyles)
+        .where(eq(wearStyles.id, input.wearStyleId))
+        .limit(1);
+      if (w.length === 0 || !w[0].isActive) throw new BadRequestException("That wear style is not available");
+      // The fragment is copied into the snapshot so a later library edit can
+      // never rewrite what this job actually asked for.
+      wearStyleSnapshot = { id: w[0].id, slug: w[0].slug, name: w[0].name, promptFragment: w[0].promptFragment };
+    }
+
     const selections: Record<string, unknown> = {
       inputType: input.inputType,
       genderPresentation: input.genderPresentation ?? null,
       ageAppearance: input.ageAppearance,
       heightAppearance: input.heightAppearance,
       pose: input.pose,
+      framing: input.framing,
+      wearStyle: wearStyleSnapshot,
+      // Recorded so a historical job shows which safety policy governed it.
+      under18Policy,
     };
 
     let job: typeof jobs.$inferSelect;
@@ -594,19 +703,122 @@ class JobsService {
   async submitFeedback(userId: string, jobId: string, body: unknown) {
     const input = parseWith(feedbackSchema, body);
     const job = await this.getOwnedJob(userId, jobId);
+    const reasons = Array.from(new Set(input.reasons));
     await this.db
       .insert(feedback)
       .values({
         jobId: job.id,
         userId,
         rating: input.rating,
+        reasons,
         comment: input.comment ?? null,
       })
       .onConflictDoUpdate({
         target: feedback.jobId,
-        set: { rating: input.rating, comment: input.comment ?? null },
+        set: { rating: input.rating, reasons, comment: input.comment ?? null },
       });
-    return { ok: true };
+    return { ok: true, reasons };
+  }
+
+  /**
+   * Regenerate one angle (or the whole set) from an existing result. Rebuilds
+   * the original request from the stored inputs and runs it through the normal
+   * creation path, so budget checks, validation and the queue are unchanged —
+   * a regeneration is just a child job that knows where it came from.
+   */
+  /**
+   * Batch mode (Phase 15): one garment, several looks. Each variant becomes its
+   * own job through the normal creation path, so budget, validation and the
+   * queue behave exactly as they do for a single generation — a batch is a
+   * convenience wrapper, not a second pipeline.
+   */
+  async createBatch(userId: string, body: unknown) {
+    const input = parseWith(batchSchema, body);
+    const created = [];
+    const failures: Array<{ index: number; label: string | null; message: string }> = [];
+    for (const [index, variant] of input.variants.entries()) {
+      const request = {
+        mainGarmentAssetId: input.garmentAssetId,
+        detailReferences: input.base.detailReferences ?? [],
+        characterId: variant.characterId ?? input.base.characterId ?? null,
+        characterAssetId: input.base.characterAssetId ?? null,
+        environmentPresetId: variant.environmentPresetId ?? input.base.environmentPresetId ?? null,
+        imageModelId: input.base.imageModelId ?? null,
+        resolution: input.base.resolution ?? "2k",
+        aspectRatio: input.base.aspectRatio ?? "portrait",
+        outputCount: variant.outputCount ?? (variant.cameraAngles?.length || 1),
+        cameraAngles: variant.cameraAngles ?? null,
+        inputType: "photo",
+        ageAppearance: input.base.ageAppearance ?? "mid-20s",
+        heightAppearance: input.base.heightAppearance ?? "average",
+        pose: variant.pose ?? input.base.pose ?? "auto",
+        framing: variant.framing ?? input.base.framing ?? "auto",
+        wearStyleId: variant.wearStyleId ?? input.base.wearStyleId ?? null,
+      };
+      try {
+        const result = await this.createJob(userId, request, crypto.randomUUID());
+        created.push({ label: variant.label ?? null, job: result.job });
+      } catch (error) {
+        // Partial acceptance is reported honestly: some jobs started, some did not.
+        failures.push({
+          index,
+          label: variant.label ?? null,
+          message: error instanceof Error ? error.message : "Could not start this variant",
+        });
+      }
+    }
+    if (created.length === 0) {
+      throw new BadRequestException(failures[0]?.message ?? "Could not start any variant");
+    }
+    return { jobs: created, failures, started: created.length, requested: input.variants.length };
+  }
+
+  async regenerate(userId: string, jobId: string, body: unknown) {
+    const input = parseWith(regenerateSchema, body);
+    const parent = await this.getOwnedJob(userId, jobId);
+    if (["ready", "manual_review", "failed", "input_rejected", "budget_stopped"].includes(parent.state) === false) {
+      throw new BadRequestException("This generation is still running");
+    }
+    const inputs = await this.db.select().from(jobInputsTable).where(eq(jobInputsTable.jobId, parent.id));
+    const main = inputs.find((row) => row.role === "main_garment");
+    if (!main) throw new BadRequestException("This generation has no garment reference to rebuild from");
+
+    const angles = parent.cameraAngles ?? [];
+    const requested = input.cameraAngle ? [input.cameraAngle] : angles;
+    if (input.cameraAngle && !angles.includes(input.cameraAngle)) {
+      throw new BadRequestException("That angle was not part of this generation");
+    }
+
+    const sel = (parent.selections ?? {}) as Record<string, unknown>;
+    const text = (value: unknown, fallback: string) => (typeof value === "string" && value ? value : fallback);
+    const wearStyle = sel.wearStyle as { id?: string } | undefined;
+
+    const childBody = {
+      mainGarmentAssetId: main.assetId,
+      detailReferences: inputs
+        .filter((row) => row.role === "detail")
+        .map((row) => ({ assetId: row.assetId, kind: row.detailKind ?? "other" })),
+      characterId: parent.characterId,
+      characterAssetId: parent.characterAssetId,
+      environmentPresetId: parent.environmentPresetId,
+      imageModelId: parent.imageModelId,
+      resolution: parent.requestedResolution,
+      aspectRatio: parent.aspectRatio,
+      outputCount: Math.max(1, Math.min(requested.length || 1, MAX_ANGLES)),
+      cameraAngles: requested.length > 0 ? requested : null,
+      inputType: text(sel.inputType, "photo"),
+      genderPresentation: typeof sel.genderPresentation === "string" ? sel.genderPresentation : null,
+      ageAppearance: text(sel.ageAppearance, "mid-20s"),
+      heightAppearance: text(sel.heightAppearance, "average"),
+      pose: text(sel.pose, "auto"),
+      framing: text(sel.framing, "auto"),
+      wearStyleId: wearStyle?.id ?? null,
+    };
+
+    const created = await this.createJob(userId, childBody, crypto.randomUUID());
+    const childId = created.job.id;
+    await this.db.update(jobs).set({ parentJobId: parent.id }).where(eq(jobs.id, childId));
+    return { ...created, job: { ...created.job, parentJobId: parent.id }, regeneratedAngle: input.cameraAngle ?? null };
   }
 
   private async getOwnedJob(userId: string, jobId: string) {
@@ -659,6 +871,22 @@ class JobsController {
   @Get("/:id/result")
   async result(@Req() req: AuthedRequest, @Param("id") id: string) {
     return this.service.getResult(req.user!.id, id);
+  }
+
+  @Post("/batch")
+  @UseGuards(GenerationRateLimitGuard)
+  async batch(@Req() req: AuthedRequest, @Body() body: unknown) {
+    return this.service.createBatch(req.user!.id, body);
+  }
+
+  @Post("/:id/regenerate")
+  @UseGuards(GenerationRateLimitGuard)
+  async regenerate(
+    @Req() req: AuthedRequest,
+    @Param("id") id: string,
+    @Body() body: unknown,
+  ) {
+    return this.service.regenerate(req.user!.id, id, body);
   }
 
   @Post("/:id/feedback")

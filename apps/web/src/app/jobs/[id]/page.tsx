@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { AppShell } from "../../../components/app-shell";
 import { Icon } from "../../../components/icon";
 import { apiFetch } from "../../../components/api";
@@ -40,6 +40,16 @@ type JobResult = {
   previewUrl: string | null;
   downloads: { png: string | null; jpg: string | null };
 };
+
+const FEEDBACK_REASONS: Array<{ id: string; label: string }> = [
+  { id: "colour_off", label: "The colour is not right" },
+  { id: "detail_lost", label: "A border, embroidery or motif was lost" },
+  { id: "fabric_wrong", label: "The fabric does not look like the reference" },
+  { id: "drape_wrong", label: "The drape, fit or fall is wrong" },
+  { id: "identity_changed", label: "The model's face or body changed" },
+  { id: "pose_framing", label: "The pose or crop is not what I wanted" },
+  { id: "background_lighting", label: "The background or lighting does not work" },
+];
 
 const angleLabels: Record<string, string> = {
   front: "Front",
@@ -92,6 +102,11 @@ export default function Job() {
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [selectedImage, setSelectedImage] = useState(0);
+  const [improving, setImproving] = useState(false);
+  const [reasons, setReasons] = useState<string[]>([]);
+  const [comment, setComment] = useState("");
+  const [regenerating, setRegenerating] = useState(false);
+  const router = useRouter();
 
   useEffect(() => {
     if (!id) return;
@@ -182,11 +197,37 @@ export default function Job() {
     try {
       await apiFetch(`/api/jobs/${id}/feedback`, {
         method: "POST",
-        body: JSON.stringify({ rating }),
+        body: JSON.stringify({ rating, reasons, comment: comment.trim() || undefined }),
       });
       setFeedback("Thanks — feedback recorded.");
+      setImproving(false);
     } catch (err) {
       setFeedback(err instanceof Error ? err.message : "Could not record feedback");
+    }
+  }
+
+  function toggleReason(reasonId: string) {
+    setReasons((current) =>
+      current.includes(reasonId) ? current.filter((entry) => entry !== reasonId) : [...current, reasonId],
+    );
+  }
+
+  /** Re-runs one angle (or the whole set) as a child job and opens it. */
+  async function regenerate(cameraAngle: string | null) {
+    if (!cameraAngle && !activeImage?.cameraAngle) {
+      setFeedback("This result has no camera angle recorded, so it cannot be regenerated yet.");
+      return;
+    }
+    setRegenerating(true);
+    try {
+      const created = await apiFetch<{ job: { id: string } }>(`/api/jobs/${id}/regenerate`, {
+        method: "POST",
+        body: JSON.stringify({ cameraAngle: cameraAngle ?? activeImage?.cameraAngle ?? null }),
+      });
+      router.push(`/jobs/${created.job.id}`);
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : "Could not start the regeneration");
+      setRegenerating(false);
     }
   }
 
@@ -322,6 +363,27 @@ export default function Job() {
                   </div>
                 </div>
 
+                {(result?.delivery === "final" || hasStoredCandidate) && (
+                  <div className="meta-card result-actions">
+                    <div className="panel-head">
+                      <div><p className="panel-kicker">Not quite</p><h2 className="panel-title">Try again</h2></div>
+                    </div>
+                    <p className="help">
+                      A regeneration re-runs the same garment, model, scene and settings as a new job — it never overwrites this result.
+                    </p>
+                    <div className="account-actions">
+                      <button className="button button-coral" onClick={() => regenerate(activeImage?.cameraAngle ?? null)} disabled={regenerating}>
+                        {regenerating ? "Starting…" : `Regenerate ${activeAngleLabel ? `the ${activeAngleLabel} angle` : "this image"}`}
+                      </button>
+                      {galleryImages.length > 1 && (
+                        <button className="button button-ghost" onClick={() => regenerate(null)} disabled={regenerating}>
+                          Redo the whole set
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 <div className="meta-card">
                   <div className="panel-head">
                     <div><p className="panel-kicker">Generation brief</p><h2 className="panel-title">Locked request</h2></div>
@@ -381,8 +443,26 @@ export default function Job() {
             </div>
             <div className="top-actions">
               <button className="button button-primary" onClick={() => sendFeedback("good")}>Good result</button>
-              <button className="button button-ghost" onClick={() => sendFeedback("needs_improvement")}>Needs improvement</button>
+              <button className="button button-ghost" onClick={() => setImproving(true)} aria-expanded={improving}>Needs improvement</button>
             </div>
+            {improving && (
+              <div className="feedback-form">
+                <p className="help">What went wrong? Pick any that apply — each one is routed to the stage that can fix it.</p>
+                <div className="feedback-reasons">
+                  {FEEDBACK_REASONS.map((reason) => (
+                    <label className="account-check" key={reason.id}>
+                      <input type="checkbox" checked={reasons.includes(reason.id)} onChange={() => toggleReason(reason.id)} />
+                      <span>{reason.label}</span>
+                    </label>
+                  ))}
+                </div>
+                <label className="input-field"><span>Anything else (optional)</span><textarea value={comment} onChange={(event) => setComment(event.target.value)} maxLength={2000} rows={3} placeholder="e.g. the gold border lost its pattern near the pallu" /></label>
+                <div className="account-actions">
+                  <button className="button button-coral" onClick={() => sendFeedback("needs_improvement")}>Send feedback</button>
+                  <button className="button button-ghost" onClick={() => { setImproving(false); setReasons([]); }}>Cancel</button>
+                </div>
+              </div>
+            )}
             {feedback && <p className="save-message" style={{ marginTop: 14 }}>{feedback}</p>}
           </div>
         )}
